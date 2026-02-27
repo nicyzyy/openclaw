@@ -23,9 +23,7 @@ COPY --chown=node:node patches ./patches
 COPY --chown=node:node scripts ./scripts
 
 USER node
-# Reduce OOM risk on low-memory hosts during dependency installation.
-# Docker builds on small VMs may otherwise fail with "Killed" (exit 137).
-RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile
 
 # Optionally install Chromium and Xvfb for browser automation.
 # Build with: docker build --build-arg OPENCLAW_INSTALL_BROWSER=1 ...
@@ -40,6 +38,20 @@ RUN if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
       PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
       node /app/node_modules/playwright-core/cli.js install --with-deps chromium && \
       chown -R node:node /home/node/.cache/ms-playwright && \
+      # Create symlink so OpenClaw's browser detection finds Chromium at /usr/bin/chromium
+      CHROME_BIN=$(find /home/node/.cache/ms-playwright -type f -name 'chrome' \( -path '*/chrome-linux/*' -o -path '*/chrome-linux64/*' \) 2>/dev/null | head -1) && \
+      if [ -n "$CHROME_BIN" ]; then \
+        ln -sf "$CHROME_BIN" /usr/bin/chromium && \
+        echo "Symlinked $CHROME_BIN -> /usr/bin/chromium"; \
+      else \
+        CHROME_BIN=$(find /home/node/.cache/ms-playwright -type f -name 'headless_shell' 2>/dev/null | head -1) && \
+        if [ -n "$CHROME_BIN" ]; then \
+          ln -sf "$CHROME_BIN" /usr/bin/chromium && \
+          echo "Symlinked $CHROME_BIN -> /usr/bin/chromium"; \
+        else \
+          echo "WARNING: Playwright Chromium executable not found for symlink"; \
+        fi; \
+      fi && \
       apt-get clean && \
       rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     fi
@@ -51,17 +63,22 @@ RUN pnpm build
 ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm ui:build
 
-# Expose the CLI binary without requiring npm global writes as non-root.
-USER root
-RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
- && chmod 755 /app/openclaw.mjs
-
 ENV NODE_ENV=production
 
+# Switch to root for entrypoint installation
+USER root
+
+# Copy custom entrypoint script for persistent storage and config migration
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Allow non-root user to write temp files during runtime/tests.
+RUN chown -R node:node /app
+
 # Security hardening: Run as non-root user
-# The node:22-bookworm image includes a 'node' user (uid 1000)
-# This reduces the attack surface by preventing container escape via root privileges
 USER node
+
+# Use custom entrypoint for persistent storage setup and config migration
+ENTRYPOINT ["docker-entrypoint.sh"]
 
 # Start gateway server with default config.
 # Binds to loopback (127.0.0.1) by default for security.
@@ -69,4 +86,4 @@ USER node
 # For container platforms requiring external health checks:
 #   1. Set OPENCLAW_GATEWAY_TOKEN or OPENCLAW_GATEWAY_PASSWORD env var
 #   2. Override CMD: ["node","openclaw.mjs","gateway","--allow-unconfigured","--bind","lan"]
-CMD ["node", "openclaw.mjs", "gateway", "--allow-unconfigured"]
+CMD ["node", "openclaw.mjs", "gateway", "--allow-unconfigured", "--bind", "lan"]
