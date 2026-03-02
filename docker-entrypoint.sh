@@ -94,6 +94,25 @@ if [ -f "$CONFIG_FILE" ]; then
         }
       }
 
+      // Fix invalid fallback models that cause "No API key" and "model_not_found" errors
+      // The openai-codex provider requires OAuth (not API key), and some model names are invalid
+      if (d.agents && d.agents.defaults && d.agents.defaults.model) {
+        const model = d.agents.defaults.model;
+        if (model.fallbacks && Array.isArray(model.fallbacks)) {
+          const invalidModels = ['openai-codex/gpt-5-codex-mini'];
+          const originalLen = model.fallbacks.length;
+          model.fallbacks = model.fallbacks.filter(m => !invalidModels.includes(m));
+          // Add anthropic/claude-sonnet-4-5 as reliable fallback if not already present
+          if (!model.fallbacks.includes('anthropic/claude-sonnet-4-5')) {
+            model.fallbacks.push('anthropic/claude-sonnet-4-5');
+          }
+          if (model.fallbacks.length !== originalLen || model.fallbacks.includes('anthropic/claude-sonnet-4-5')) {
+            changed = true;
+            console.log('[entrypoint] Fixed fallback models: ' + JSON.stringify(model.fallbacks));
+          }
+        }
+      }
+
       // Disable sandbox mode (no Docker-in-Docker on Render) and allow host browser control
       // This ensures the browser tool defaults to target="host" without requiring explicit parameter
       if (!d.agents) d.agents = {};
