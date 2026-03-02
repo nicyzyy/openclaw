@@ -47,8 +47,13 @@ if [ -f "$CONFIG_FILE" ]; then
         delete d.channels.telegram.streaming;
         changed = true;
       }
-
-      // Ensure controlUi config for non-loopback binding (required since v2026.2.24)
+      // Remove unrecognized telegram keys that cause config validation failure
+      if (d.channels && d.channels.telegram && d.channels.telegram.requireMention !== undefined) {
+        delete d.channels.telegram.requireMention;
+        changed = true;
+        console.log('[entrypoint] Removed unrecognized key: channels.telegram.requireMention');
+      }
+      // Ensure controlUi config for non-loopback bindingg (required since v2026.2.24)
       if (!d.gateway) d.gateway = {};
       if (!d.gateway.controlUi) d.gateway.controlUi = {};
       if (!d.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback) {
