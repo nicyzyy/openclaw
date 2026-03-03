@@ -135,7 +135,7 @@ if [ -f "$CONFIG_FILE" ]; then
       }
 
       // Disable sandbox mode (no Docker-in-Docker on Render) and allow host browser control
-      // This ensures the browser tool defaults to target="host" without requiring explicit parameter
+      // This ensures the browser tool defaults to target=host without requiring explicit parameter
       if (!d.agents) d.agents = {};
       if (!d.agents.defaults) d.agents.defaults = {};
       if (!d.agents.defaults.sandbox) d.agents.defaults.sandbox = {};
