@@ -53,6 +53,27 @@ if [ -f "$CONFIG_FILE" ]; then
         changed = true;
         console.log('[entrypoint] Removed unrecognized key: channels.telegram.requireMention');
       }
+      // Remove unrecognized agent defaults key from legacy edits
+      if (d.agents && d.agents.defaults && d.agents.defaults.auth !== undefined) {
+        delete d.agents.defaults.auth;
+        changed = true;
+        console.log('[entrypoint] Removed unrecognized key: agents.defaults.auth');
+      }
+      // Remove invalid per-channel keys accidentally written under channel policy blocks
+      const guild = d.channels && d.channels.discord && d.channels.discord.guilds && d.channels.discord.guilds['1476949002493890562'];
+      const aiTasks = guild && guild.channels && guild.channels['1477891818103247020'];
+      if (aiTasks) {
+        if (aiTasks.allowBots !== undefined) {
+          delete aiTasks.allowBots;
+          changed = true;
+          console.log('[entrypoint] Removed invalid key: channels.discord.guilds.<guild>.channels.<ai-tasks>.allowBots');
+        }
+        if (aiTasks.policy !== undefined) {
+          delete aiTasks.policy;
+          changed = true;
+          console.log('[entrypoint] Removed invalid key: channels.discord.guilds.<guild>.channels.<ai-tasks>.policy');
+        }
+      }
       // Ensure controlUi config for non-loopback bindingg (required since v2026.2.24)
       if (!d.gateway) d.gateway = {};
       if (!d.gateway.controlUi) d.gateway.controlUi = {};
@@ -94,8 +115,8 @@ if [ -f "$CONFIG_FILE" ]; then
         }
       }
 
-      // Fix invalid fallback models that cause "No API key" and "model_not_found" errors
-      // The openai-codex provider requires OAuth (not API key), and some model names are invalid
+      // Fix invalid fallback models that cause provider auth/model errors
+      // The openai-codex provider requires OAuth, and some model names are invalid
       if (d.agents && d.agents.defaults && d.agents.defaults.model) {
         const model = d.agents.defaults.model;
         if (model.fallbacks && Array.isArray(model.fallbacks)) {
