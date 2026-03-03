@@ -7,6 +7,12 @@ if [ -d /data/.openclaw ]; then
   rm -rf /home/node/.openclaw
   ln -s /data/.openclaw /home/node/.openclaw
   echo "[entrypoint] Linked persistent storage: /data/.openclaw -> /home/node/.openclaw"
+  echo "[entrypoint] Disk usage before cleanup:" && (df -h /data || true)
+  # ENOSPC mitigation: prune stale logs/transcripts on persistent volume
+  find /data/.openclaw -type f \( -name "*.log" -o -name "*.log.*" \) -mtime +2 -print -delete 2>/dev/null || true
+  find /tmp/openclaw -type f \( -name "*.log" -o -name "*.log.*" \) -mtime +1 -print -delete 2>/dev/null || true
+  find /data/.openclaw -type f -path "*/transcripts/*" -mtime +14 -print -delete 2>/dev/null || true
+  echo "[entrypoint] Disk usage after cleanup:" && (df -h /data || true)
 fi
 
 # Setup PATH for skills
