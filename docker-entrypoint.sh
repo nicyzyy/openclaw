@@ -267,6 +267,16 @@ else
   fi
 fi
 
+# Patch pi-ai models: inject GPT-5.4 into openai-codex provider
+# GPT-5.4 released 2026-03-05, pi-ai catalog not yet updated
+MODELS_GEN="/app/node_modules/@mariozechner/pi-ai/dist/models.generated.js"
+PATCH_SCRIPT="${STATE_DIR}/patch-gpt54.py"
+if [ -f "$MODELS_GEN" ] && [ -f "$PATCH_SCRIPT" ]; then
+  python3 "$PATCH_SCRIPT" 2>&1 || echo "[entrypoint] GPT-5.4 patch failed (non-fatal)"
+elif [ -f "$MODELS_GEN" ] && ! grep -q '"gpt-5.4"' "$MODELS_GEN"; then
+  echo "[entrypoint] GPT-5.4 patch script not found at $PATCH_SCRIPT, skipping"
+fi
+
 # Execute the main command
 echo "[entrypoint] Starting OpenClaw gateway..."
 exec "$@"
