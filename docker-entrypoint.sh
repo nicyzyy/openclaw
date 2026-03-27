@@ -9,15 +9,24 @@ if [ -d /data/.openclaw ]; then
   rm -rf /home/node/.openclaw
   ln -s /data/.openclaw /home/node/.openclaw
   echo "[entrypoint] Linked persistent storage: /data/.openclaw -> /home/node/.openclaw"
+
   # Cleanup old logs
   find /data/.openclaw -type f \( -name "*.log" -o -name "*.log.*" \) -mtime +2 -delete 2>/dev/null || true
   find /data/.openclaw -type f -path "*/transcripts/*" -mtime +14 -delete 2>/dev/null || true
+
+  # Disk usage report
+  echo "[entrypoint] Disk usage before cleanup:"
+  df -h /data 2>/dev/null || true
+  find /data/.openclaw -maxdepth 1 -type d -exec du -sh {} \; 2>/dev/null | sort -rh | head -10
+  echo "[entrypoint] Disk usage after cleanup:"
+  df -h /data 2>/dev/null || true
 fi
 
 # Setup PATH for skills
 if [ -d /data/npm-global/bin ]; then
   export PATH="/data/npm-global/bin:$PATH"
   export NPM_CONFIG_PREFIX=/data/npm-global
+  echo "[entrypoint] Added skills to PATH: /data/npm-global/bin"
 fi
 
 # Setup Playwright browsers path
@@ -25,16 +34,23 @@ if [ -d /home/node/.cache/ms-playwright ]; then
   export PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
 fi
 
-# ── Config initialization ─────────────────────────────────────────
+# ── Clean up stale gateway lock files ────────────────────────────
+# Previous failed deployments may leave lock files that prevent startup
 STATE_DIR="${OPENCLAW_STATE_DIR:-/home/node/.openclaw}"
+find "$STATE_DIR" -name "gateway.*.lock" -delete 2>/dev/null || true
+echo "[entrypoint] Cleaned up stale gateway lock files"
+
+# ── Config initialization ─────────────────────────────────────────
 CONFIG_FILE="${STATE_DIR}/openclaw.json"
-RESET_MARKER="${STATE_DIR}/.config-reset-v4"
+RESET_MARKER="${STATE_DIR}/.config-reset-v5"
+
+echo "[entrypoint] Config path: $CONFIG_FILE"
 
 # One-time config reset for version upgrades
 if [ -f "$CONFIG_FILE" ] && [ ! -f "$RESET_MARKER" ]; then
   cp "$CONFIG_FILE" "${CONFIG_FILE}.backup-$(date +%Y%m%d-%H%M%S)"
   rm -f "$CONFIG_FILE"
-  echo "[entrypoint] Config reset for upgrade (v4)"
+  echo "[entrypoint] Config reset for upgrade (v5)"
   touch "$RESET_MARKER"
 fi
 
@@ -61,6 +77,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 CONFIGEOF
   echo "[entrypoint] Seed config created"
 else
+  echo "[entrypoint] Patching existing config..."
   # Patch existing config: sync gateway token from env
   GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
   if [ -n "$GATEWAY_TOKEN" ]; then
@@ -70,16 +87,25 @@ else
       const t = process.env.OPENCLAW_GATEWAY_TOKEN;
       try {
         const d = JSON.parse(fs.readFileSync(p, 'utf8'));
-        if (!d.gateway) d.gateway = {};
-        if (!d.gateway.auth) d.gateway.auth = {};
-        if (!d.gateway.controlUi) d.gateway.controlUi = {};
-        d.gateway.auth.token = t;
-        d.gateway.auth.mode = 'token';
-        d.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true;
-        d.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
-        if (!d.gateway.trustedProxies) d.gateway.trustedProxies = ['10.0.0.0/8', '172.16.0.0/12'];
-        fs.writeFileSync(p, JSON.stringify(d, null, 2));
-        console.log('[entrypoint] Config patched');
+        let changed = false;
+        if (!d.gateway) { d.gateway = {}; changed = true; }
+        if (!d.gateway.auth) { d.gateway.auth = {}; changed = true; }
+        if (!d.gateway.controlUi) { d.gateway.controlUi = {}; changed = true; }
+        if (d.gateway.auth.token !== t) { d.gateway.auth.token = t; changed = true; }
+        if (d.gateway.auth.mode !== 'token') { d.gateway.auth.mode = 'token'; changed = true; }
+        if (!d.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback) {
+          d.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true; changed = true;
+        }
+        if (!d.gateway.controlUi.dangerouslyDisableDeviceAuth) {
+          d.gateway.controlUi.dangerouslyDisableDeviceAuth = true; changed = true;
+        }
+        if (!d.gateway.trustedProxies) { d.gateway.trustedProxies = ['10.0.0.0/8', '172.16.0.0/12']; changed = true; }
+        if (changed) {
+          fs.writeFileSync(p, JSON.stringify(d, null, 2));
+          console.log('[entrypoint] Config patched');
+        } else {
+          console.log('[entrypoint] Config OK: no changes needed');
+        }
       } catch(e) {
         console.error('[entrypoint] Patch error:', e.message);
       }
@@ -87,9 +113,22 @@ else
   fi
 fi
 
+# Print config for debugging
+echo "[entrypoint] Current config:"
+cat "$CONFIG_FILE" | node -e "
+  const d=require('fs').readFileSync('/dev/stdin','utf8');
+  try {
+    const c=JSON.parse(d);
+    // Mask token for security
+    if(c.gateway?.auth?.token) c.gateway.auth.token = c.gateway.auth.token.substring(0,10)+'...';
+    console.log(JSON.stringify(c, null, 2));
+  } catch(e) { console.log('INVALID JSON:', d.substring(0,200)); }
+"
+
 # ── Claude setup-token injection (auth-profiles.json only) ────────
 CLAUDE_TOKEN="${CLAUDE_SETUP_TOKEN:-}"
 if [ -n "$CLAUDE_TOKEN" ]; then
+  echo "[entrypoint] Configuring Anthropic auth profiles..."
   # Write to the default agent's auth-profiles.json
   AGENT_DIR="${STATE_DIR}/agents/main/agent"
   AUTH_FILE="${AGENT_DIR}/auth-profiles.json"
@@ -123,4 +162,7 @@ if command -v Xvfb >/dev/null 2>&1; then
 fi
 
 echo "[entrypoint] Starting OpenClaw gateway..."
-exec "$@"
+echo "[entrypoint] CMD: $@"
+
+# Use exec with stderr redirected to stdout so Render captures all output
+exec "$@" 2>&1
