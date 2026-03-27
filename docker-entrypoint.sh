@@ -2,11 +2,12 @@
 # Custom entrypoint for OpenClaw on Render
 # Handles persistent storage setup and config initialization
 
-set -e
+# Do NOT use set -e - we want to handle errors gracefully
+# set -e
 
-echo "[entrypoint] === OpenClaw Render Entrypoint v6 ==="
+echo "[entrypoint] === OpenClaw Render Entrypoint v7 ==="
 echo "[entrypoint] Date: $(date)"
-echo "[entrypoint] Node: $(node --version)"
+echo "[entrypoint] Node: $(node --version 2>&1 || echo 'unknown')"
 echo "[entrypoint] Args: $@"
 
 # Setup symlink for persistent storage
@@ -16,11 +17,32 @@ if [ -d /data ]; then
   ln -s /data/.openclaw /home/node/.openclaw
   echo "[entrypoint] Linked persistent storage: /data/.openclaw -> /home/node/.openclaw"
 
-  # Cleanup old logs
-  find /data/.openclaw -type f \( -name "*.log" -o -name "*.log.*" \) -mtime +2 -delete 2>/dev/null || true
-  find /data/.openclaw -type f -path "*/transcripts/*" -mtime +14 -delete 2>/dev/null || true
-  echo "[entrypoint] Disk usage:"
+  echo "[entrypoint] Disk usage before cleanup:"
   df -h /data 2>/dev/null || true
+  du -sh /data/.openclaw 2>/dev/null || true
+  du -sh /data/.openclaw/*/ 2>/dev/null || true
+
+  # Aggressive cleanup to free disk space
+  echo "[entrypoint] Running aggressive cleanup..."
+  # Remove old logs
+  find /data/.openclaw -type f \( -name "*.log" -o -name "*.log.*" \) -delete 2>/dev/null || true
+  # Remove old transcripts
+  find /data/.openclaw -type f -path "*/transcripts/*" -mtime +3 -delete 2>/dev/null || true
+  # Remove old config backups
+  find /data/.openclaw -name "openclaw.json.backup*" -delete 2>/dev/null || true
+  # Remove old lock files
+  find /data/.openclaw -name "*.lock" -delete 2>/dev/null || true
+  # Remove browser cache
+  rm -rf /data/.openclaw/browser/cache 2>/dev/null || true
+  # Remove workspace temp files
+  find /data/.openclaw/workspace -type f -name "*.tmp" -delete 2>/dev/null || true
+  find /data/.openclaw/workspace -type f -name "*.bak" -delete 2>/dev/null || true
+  # Remove completions cache
+  rm -rf /data/.openclaw/completions 2>/dev/null || true
+
+  echo "[entrypoint] Disk usage after cleanup:"
+  df -h /data 2>/dev/null || true
+  du -sh /data/.openclaw 2>/dev/null || true
 else
   echo "[entrypoint] WARNING: /data not mounted, using ephemeral storage"
   mkdir -p /home/node/.openclaw
@@ -45,26 +67,24 @@ echo "[entrypoint] Cleaned up stale gateway lock files"
 
 # ── Config initialization ─────────────────────────────────────────
 CONFIG_FILE="${STATE_DIR}/openclaw.json"
-RESET_MARKER="${STATE_DIR}/.config-reset-v6"
+RESET_MARKER="${STATE_DIR}/.config-reset-v7"
 
 echo "[entrypoint] Config path: $CONFIG_FILE"
-echo "[entrypoint] Reset marker: $RESET_MARKER"
 
 # ALWAYS reset config on new marker version
 if [ ! -f "$RESET_MARKER" ]; then
-  if [ -f "$CONFIG_FILE" ]; then
-    cp "$CONFIG_FILE" "${CONFIG_FILE}.backup-$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
-    rm -f "$CONFIG_FILE"
-    echo "[entrypoint] Config reset for upgrade (v6) - old config backed up"
-  fi
+  echo "[entrypoint] Config reset triggered (v7)"
+  # Don't backup, just delete - saves disk space
+  rm -f "$CONFIG_FILE" 2>/dev/null || true
   # Clean up old markers
   rm -f "${STATE_DIR}"/.config-reset-v* 2>/dev/null || true
-  touch "$RESET_MARKER"
+  touch "$RESET_MARKER" 2>/dev/null || true
 fi
 
 # Create minimal seed config if none exists
 GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
 if [ ! -f "$CONFIG_FILE" ]; then
+  echo "[entrypoint] Creating seed config..."
   mkdir -p "$STATE_DIR"
   cat > "$CONFIG_FILE" << CONFIGEOF
 {
@@ -81,7 +101,14 @@ if [ ! -f "$CONFIG_FILE" ]; then
   }
 }
 CONFIGEOF
-  echo "[entrypoint] Seed config created"
+  if [ $? -eq 0 ]; then
+    echo "[entrypoint] Seed config created successfully"
+  else
+    echo "[entrypoint] ERROR: Failed to create seed config!"
+    echo "[entrypoint] Checking disk space..."
+    df -h /data 2>/dev/null || true
+    df -i /data 2>/dev/null || true
+  fi
 else
   echo "[entrypoint] Using existing config"
   # Patch gateway token if needed
@@ -112,8 +139,6 @@ else
         }
       } catch(e) {
         console.error('[entrypoint] Patch error:', e.message);
-        // If config is corrupted, recreate it
-        console.log('[entrypoint] Recreating config due to error');
         const newConfig = {
           gateway: {
             auth: { token: t, mode: 'token' },
@@ -122,14 +147,15 @@ else
           }
         };
         fs.writeFileSync(p, JSON.stringify(newConfig, null, 2));
+        console.log('[entrypoint] Config recreated');
       }
-    " "$CONFIG_FILE"
+    " "$CONFIG_FILE" 2>&1
   fi
 fi
 
 # Show config (masked)
 echo "[entrypoint] Config content:"
-cat "$CONFIG_FILE" | sed 's/"token": "[^"]*"/"token": "***MASKED***"/g'
+cat "$CONFIG_FILE" 2>/dev/null | sed 's/"token": "[^"]*"/"token": "***MASKED***"/g' || echo "[entrypoint] Cannot read config file"
 
 # ── Claude setup-token injection ──────────────────────────────────
 CLAUDE_TOKEN="${CLAUDE_SETUP_TOKEN:-}"
@@ -137,7 +163,7 @@ if [ -n "$CLAUDE_TOKEN" ]; then
   echo "[entrypoint] Configuring Claude setup-token..."
   AGENT_DIR="${STATE_DIR}/agents/main/agent"
   AUTH_FILE="${AGENT_DIR}/auth-profiles.json"
-  mkdir -p "$AGENT_DIR"
+  mkdir -p "$AGENT_DIR" 2>/dev/null || true
 
   node -e "
     const fs = require('fs');
@@ -157,7 +183,7 @@ if [ -n "$CLAUDE_TOKEN" ]; then
     };
     fs.writeFileSync(authPath, JSON.stringify(store, null, 2));
     console.log('[entrypoint] Claude setup-token written to: ' + authPath);
-  " "$AUTH_FILE"
+  " "$AUTH_FILE" 2>&1 || echo "[entrypoint] WARNING: Failed to write Claude setup-token"
 fi
 
 # Start Xvfb if available
@@ -170,7 +196,7 @@ fi
 echo "[entrypoint] Testing OpenClaw binary..."
 node openclaw.mjs --version 2>&1 || echo "[entrypoint] WARNING: version check failed"
 
-# ── List files in state dir for debugging ─────────────────────────
+# ── Final state dir listing ──────────────────────────────────────
 echo "[entrypoint] State dir contents:"
 ls -la "$STATE_DIR/" 2>/dev/null || true
 
