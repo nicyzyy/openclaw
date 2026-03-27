@@ -31,7 +31,7 @@ fi
 # ── Config initialization ─────────────────────────────────────────
 STATE_DIR="${OPENCLAW_STATE_DIR:-/home/node/.openclaw}"
 CONFIG_FILE="${STATE_DIR}/openclaw.json"
-RESET_MARKER="${STATE_DIR}/.config-reset-v2"
+RESET_MARKER="${STATE_DIR}/.config-reset-v3"
 echo "[entrypoint] Config path: $CONFIG_FILE"
 
 # One-time config reset: backup old config and let OpenClaw generate fresh defaults
@@ -43,7 +43,7 @@ if [ -f "$CONFIG_FILE" ] && [ ! -f "$RESET_MARKER" ]; then
   rm -f "$CONFIG_FILE"
   echo "[entrypoint] Removed old config — OpenClaw will generate fresh defaults on startup"
   touch "$RESET_MARKER"
-  echo "[entrypoint] Config reset complete (marker: .config-reset-v2)"
+  echo "[entrypoint] Config reset complete (marker: .config-reset-v3)"
 fi
 
 # If config file exists (either pre-existing or will be created by OpenClaw),
@@ -164,6 +164,21 @@ else
       if (!d.agents.defaults.sandbox.browser.allowHostControl) {
         d.agents.defaults.sandbox.browser.allowHostControl = true;
         changed = true;
+      }
+
+      // Force override: replace any openai-codex model references with anthropic/claude-opus-4-6
+      // This handles agent-level model overrides in agents.list[]
+      if (Array.isArray(d.agents.list)) {
+        d.agents.list.forEach(function(agent) {
+          if (agent.model) {
+            var modelStr = typeof agent.model === 'string' ? agent.model : (agent.model.primary || '');
+            if (modelStr.includes('openai-codex')) {
+              agent.model = { primary: 'anthropic/claude-opus-4-6' };
+              changed = true;
+              console.log('[entrypoint] Replaced openai-codex model for agent: ' + (agent.id || 'unknown'));
+            }
+          }
+        });
       }
 
       if (changed) {
