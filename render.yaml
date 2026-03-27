@@ -15,6 +15,10 @@ services:
         value: /data/workspace
       - key: OPENCLAW_GATEWAY_TOKEN
         generateValue: true
+      - key: CLAUDE_SETUP_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
     disk:
       name: openclaw-data
       mountPath: /data

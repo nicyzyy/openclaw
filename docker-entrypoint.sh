@@ -68,6 +68,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
       },
       agents: {
         defaults: {
+          model: {
+            primary: 'anthropic/claude-opus-4-6'
+          },
           sandbox: {
             mode: 'off',
             browser: { allowHostControl: true }
@@ -139,6 +142,16 @@ else
         }
       }
 
+      // Set default model to Claude Opus 4.6
+      if (!d.agents) d.agents = {};
+      if (!d.agents.defaults) d.agents.defaults = {};
+      if (!d.agents.defaults.model) d.agents.defaults.model = {};
+      if (d.agents.defaults.model.primary !== 'anthropic/claude-opus-4-6') {
+        d.agents.defaults.model.primary = 'anthropic/claude-opus-4-6';
+        changed = true;
+        console.log('[entrypoint] Default model set to anthropic/claude-opus-4-6');
+      }
+
       // Ensure sandbox mode off
       if (!d.agents) d.agents = {};
       if (!d.agents.defaults) d.agents.defaults = {};
@@ -163,6 +176,114 @@ else
       console.error('[entrypoint] Config patch error:', e.message);
     }
   " "$CONFIG_FILE"
+fi
+
+# ── Claude setup-token injection ─────────────────────────────────
+# Write Claude setup-token to auth-profiles.json and update openclaw.json
+CLAUDE_SETUP_TOKEN="${CLAUDE_SETUP_TOKEN:-}"
+ANTHROPIC_API_KEY_ENV="${ANTHROPIC_API_KEY:-}"
+if [ -n "$CLAUDE_SETUP_TOKEN" ] || [ -n "$ANTHROPIC_API_KEY_ENV" ]; then
+  echo "[entrypoint] Configuring Anthropic auth profiles..."
+  AGENT_DIR="${STATE_DIR}/agents/main/agent"
+  AUTH_PROFILES_FILE="${AGENT_DIR}/auth-profiles.json"
+  mkdir -p "$AGENT_DIR"
+
+  node -e "
+    const fs = require('fs');
+    const path = require('path');
+    const authPath = process.argv[1];
+    const configPath = process.argv[2];
+    const setupToken = process.env.CLAUDE_SETUP_TOKEN || '';
+    const apiKey = process.env.ANTHROPIC_API_KEY || '';
+
+    // Load or create auth-profiles.json
+    let store = { version: 2, profiles: {} };
+    try {
+      if (fs.existsSync(authPath)) {
+        store = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+      }
+    } catch(e) {
+      console.log('[entrypoint] Could not read existing auth-profiles.json, creating new');
+    }
+
+    let authChanged = false;
+
+    // Add Claude setup-token as token profile
+    if (setupToken) {
+      const profileId = 'anthropic:setup-token';
+      if (!store.profiles[profileId] || store.profiles[profileId].token !== setupToken) {
+        store.profiles[profileId] = {
+          type: 'token',
+          provider: 'anthropic',
+          token: setupToken
+        };
+        authChanged = true;
+        console.log('[entrypoint] Claude setup-token profile written: ' + setupToken.substring(0, 20) + '...');
+      }
+    }
+
+    // Add Anthropic API key as fallback profile
+    if (apiKey) {
+      const profileId = 'anthropic:api-key';
+      if (!store.profiles[profileId] || store.profiles[profileId].key !== apiKey) {
+        store.profiles[profileId] = {
+          type: 'api_key',
+          provider: 'anthropic',
+          key: apiKey
+        };
+        authChanged = true;
+        console.log('[entrypoint] Anthropic API key profile written');
+      }
+    }
+
+    if (authChanged) {
+      fs.writeFileSync(authPath, JSON.stringify(store, null, 2));
+      console.log('[entrypoint] auth-profiles.json updated');
+    }
+
+    // Update openclaw.json to reference the auth profiles
+    try {
+      let config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      let configChanged = false;
+
+      if (!config.auth) config.auth = {};
+      if (!config.auth.profiles) config.auth.profiles = {};
+
+      if (setupToken) {
+        const pid = 'anthropic:setup-token';
+        if (!config.auth.profiles[pid]) {
+          config.auth.profiles[pid] = { provider: 'anthropic', mode: 'token' };
+          configChanged = true;
+        }
+      }
+      if (apiKey) {
+        const pid = 'anthropic:api-key';
+        if (!config.auth.profiles[pid]) {
+          config.auth.profiles[pid] = { provider: 'anthropic', mode: 'api_key' };
+          configChanged = true;
+        }
+      }
+
+      // Set auth order: prefer setup-token, fallback to api-key
+      const order = [];
+      if (setupToken) order.push('anthropic:setup-token');
+      if (apiKey) order.push('anthropic:api-key');
+      if (order.length > 0) {
+        if (!config.auth.order) config.auth.order = {};
+        if (JSON.stringify(config.auth.order.anthropic) !== JSON.stringify(order)) {
+          config.auth.order.anthropic = order;
+          configChanged = true;
+        }
+      }
+
+      if (configChanged) {
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        console.log('[entrypoint] openclaw.json auth config updated');
+      }
+    } catch(e) {
+      console.error('[entrypoint] Config auth update error:', e.message);
+    }
+  " "$AUTH_PROFILES_FILE" "$CONFIG_FILE"
 fi
 
 # Start Xvfb virtual display if available
