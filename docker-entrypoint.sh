@@ -4,8 +4,14 @@
 
 set -e
 
+echo "[entrypoint] === OpenClaw Render Entrypoint v6 ==="
+echo "[entrypoint] Date: $(date)"
+echo "[entrypoint] Node: $(node --version)"
+echo "[entrypoint] Args: $@"
+
 # Setup symlink for persistent storage
-if [ -d /data/.openclaw ]; then
+if [ -d /data ]; then
+  mkdir -p /data/.openclaw
   rm -rf /home/node/.openclaw
   ln -s /data/.openclaw /home/node/.openclaw
   echo "[entrypoint] Linked persistent storage: /data/.openclaw -> /home/node/.openclaw"
@@ -13,13 +19,11 @@ if [ -d /data/.openclaw ]; then
   # Cleanup old logs
   find /data/.openclaw -type f \( -name "*.log" -o -name "*.log.*" \) -mtime +2 -delete 2>/dev/null || true
   find /data/.openclaw -type f -path "*/transcripts/*" -mtime +14 -delete 2>/dev/null || true
-
-  # Disk usage report
-  echo "[entrypoint] Disk usage before cleanup:"
+  echo "[entrypoint] Disk usage:"
   df -h /data 2>/dev/null || true
-  find /data/.openclaw -maxdepth 1 -type d -exec du -sh {} \; 2>/dev/null | sort -rh | head -10
-  echo "[entrypoint] Disk usage after cleanup:"
-  df -h /data 2>/dev/null || true
+else
+  echo "[entrypoint] WARNING: /data not mounted, using ephemeral storage"
+  mkdir -p /home/node/.openclaw
 fi
 
 # Setup PATH for skills
@@ -35,31 +39,33 @@ if [ -d /home/node/.cache/ms-playwright ]; then
 fi
 
 # ── Clean up stale gateway lock files ────────────────────────────
-# Previous failed deployments may leave lock files that prevent startup
 STATE_DIR="${OPENCLAW_STATE_DIR:-/home/node/.openclaw}"
 find "$STATE_DIR" -name "gateway.*.lock" -delete 2>/dev/null || true
 echo "[entrypoint] Cleaned up stale gateway lock files"
 
 # ── Config initialization ─────────────────────────────────────────
 CONFIG_FILE="${STATE_DIR}/openclaw.json"
-RESET_MARKER="${STATE_DIR}/.config-reset-v5"
+RESET_MARKER="${STATE_DIR}/.config-reset-v6"
 
 echo "[entrypoint] Config path: $CONFIG_FILE"
+echo "[entrypoint] Reset marker: $RESET_MARKER"
 
-# One-time config reset for version upgrades
-if [ -f "$CONFIG_FILE" ] && [ ! -f "$RESET_MARKER" ]; then
-  cp "$CONFIG_FILE" "${CONFIG_FILE}.backup-$(date +%Y%m%d-%H%M%S)"
-  rm -f "$CONFIG_FILE"
-  echo "[entrypoint] Config reset for upgrade (v5)"
+# ALWAYS reset config on new marker version
+if [ ! -f "$RESET_MARKER" ]; then
+  if [ -f "$CONFIG_FILE" ]; then
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.backup-$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    rm -f "$CONFIG_FILE"
+    echo "[entrypoint] Config reset for upgrade (v6) - old config backed up"
+  fi
+  # Clean up old markers
+  rm -f "${STATE_DIR}"/.config-reset-v* 2>/dev/null || true
   touch "$RESET_MARKER"
 fi
 
 # Create minimal seed config if none exists
+GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
 if [ ! -f "$CONFIG_FILE" ]; then
   mkdir -p "$STATE_DIR"
-  GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
-
-  # Write a minimal, safe config - only gateway settings needed for Render
   cat > "$CONFIG_FILE" << CONFIGEOF
 {
   "gateway": {
@@ -77,9 +83,8 @@ if [ ! -f "$CONFIG_FILE" ]; then
 CONFIGEOF
   echo "[entrypoint] Seed config created"
 else
-  echo "[entrypoint] Patching existing config..."
-  # Patch existing config: sync gateway token from env
-  GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
+  echo "[entrypoint] Using existing config"
+  # Patch gateway token if needed
   if [ -n "$GATEWAY_TOKEN" ]; then
     node -e "
       const fs = require('fs');
@@ -99,37 +104,37 @@ else
         if (!d.gateway.controlUi.dangerouslyDisableDeviceAuth) {
           d.gateway.controlUi.dangerouslyDisableDeviceAuth = true; changed = true;
         }
-        if (!d.gateway.trustedProxies) { d.gateway.trustedProxies = ['10.0.0.0/8', '172.16.0.0/12']; changed = true; }
         if (changed) {
           fs.writeFileSync(p, JSON.stringify(d, null, 2));
           console.log('[entrypoint] Config patched');
         } else {
-          console.log('[entrypoint] Config OK: no changes needed');
+          console.log('[entrypoint] Config OK');
         }
       } catch(e) {
         console.error('[entrypoint] Patch error:', e.message);
+        // If config is corrupted, recreate it
+        console.log('[entrypoint] Recreating config due to error');
+        const newConfig = {
+          gateway: {
+            auth: { token: t, mode: 'token' },
+            controlUi: { dangerouslyAllowHostHeaderOriginFallback: true, dangerouslyDisableDeviceAuth: true },
+            trustedProxies: ['10.0.0.0/8', '172.16.0.0/12']
+          }
+        };
+        fs.writeFileSync(p, JSON.stringify(newConfig, null, 2));
       }
     " "$CONFIG_FILE"
   fi
 fi
 
-# Print config for debugging
-echo "[entrypoint] Current config:"
-cat "$CONFIG_FILE" | node -e "
-  const d=require('fs').readFileSync('/dev/stdin','utf8');
-  try {
-    const c=JSON.parse(d);
-    // Mask token for security
-    if(c.gateway?.auth?.token) c.gateway.auth.token = c.gateway.auth.token.substring(0,10)+'...';
-    console.log(JSON.stringify(c, null, 2));
-  } catch(e) { console.log('INVALID JSON:', d.substring(0,200)); }
-"
+# Show config (masked)
+echo "[entrypoint] Config content:"
+cat "$CONFIG_FILE" | sed 's/"token": "[^"]*"/"token": "***MASKED***"/g'
 
-# ── Claude setup-token injection (auth-profiles.json only) ────────
+# ── Claude setup-token injection ──────────────────────────────────
 CLAUDE_TOKEN="${CLAUDE_SETUP_TOKEN:-}"
 if [ -n "$CLAUDE_TOKEN" ]; then
-  echo "[entrypoint] Configuring Anthropic auth profiles..."
-  # Write to the default agent's auth-profiles.json
+  echo "[entrypoint] Configuring Claude setup-token..."
   AGENT_DIR="${STATE_DIR}/agents/main/agent"
   AUTH_FILE="${AGENT_DIR}/auth-profiles.json"
   mkdir -p "$AGENT_DIR"
@@ -151,7 +156,7 @@ if [ -n "$CLAUDE_TOKEN" ]; then
       token: token
     };
     fs.writeFileSync(authPath, JSON.stringify(store, null, 2));
-    console.log('[entrypoint] Claude setup-token written to auth-profiles.json');
+    console.log('[entrypoint] Claude setup-token written to: ' + authPath);
   " "$AUTH_FILE"
 fi
 
@@ -161,8 +166,19 @@ if command -v Xvfb >/dev/null 2>&1; then
   Xvfb :99 -screen 0 1280x720x24 -nolisten tcp &
 fi
 
-echo "[entrypoint] Starting OpenClaw gateway..."
-echo "[entrypoint] CMD: $@"
+# ── Test OpenClaw binary before starting ──────────────────────────
+echo "[entrypoint] Testing OpenClaw binary..."
+node openclaw.mjs --version 2>&1 || echo "[entrypoint] WARNING: version check failed"
 
-# Use exec with stderr redirected to stdout so Render captures all output
+# ── List files in state dir for debugging ─────────────────────────
+echo "[entrypoint] State dir contents:"
+ls -la "$STATE_DIR/" 2>/dev/null || true
+
+echo "[entrypoint] ========================================"
+echo "[entrypoint] Starting OpenClaw gateway now..."
+echo "[entrypoint] Full command: $@"
+echo "[entrypoint] ========================================"
+
+# Use exec to replace shell with OpenClaw process
+# Redirect stderr to stdout so Render captures all output
 exec "$@" 2>&1
