@@ -244,7 +244,7 @@ COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 USER node
 
 # Use custom entrypoint for persistent storage setup and config migration
-ENTRYPOINT ["docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # Start gateway server binding to LAN (0.0.0.0) for Render external access.
 HEALTHCHECK --interval=3m --timeout=10s --start-period=15s --retries=3 \

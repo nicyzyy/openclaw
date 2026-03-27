@@ -1,21 +1,24 @@
 #!/bin/sh
-# OpenClaw Render Entrypoint v8
-# ALWAYS regenerates seed config to prevent corrupted config issues
+# OpenClaw Render Entrypoint v9 - Minimal startup to diagnose issues
+# All output goes to stdout/stderr for Render log capture
 
-echo "[entrypoint] === OpenClaw Render Entrypoint v8 ==="
-echo "[entrypoint] Date: $(date)"
-echo "[entrypoint] Node: $(node --version 2>&1 || echo unknown)"
-echo "[entrypoint] CMD: $@"
+printf "[entrypoint-v9] STARTING at %s\n" "$(date)" >&2
+printf "[entrypoint-v9] STARTING at %s\n" "$(date)"
+printf "[entrypoint-v9] whoami=%s uid=%s\n" "$(whoami)" "$(id -u)"
+printf "[entrypoint-v9] pwd=%s\n" "$(pwd)"
+printf "[entrypoint-v9] CMD=%s\n" "$*"
 
 # ── Persistent storage setup ────────────────────────────────────
 if [ -d /data ]; then
-  mkdir -p /data/.openclaw
-  rm -rf /home/node/.openclaw
-  ln -s /data/.openclaw /home/node/.openclaw
-  echo "[entrypoint] Linked: /data/.openclaw -> /home/node/.openclaw"
+  printf "[entrypoint-v9] /data exists\n"
+  mkdir -p /data/.openclaw 2>&1 || printf "[entrypoint-v9] WARN: cannot mkdir /data/.openclaw\n"
+  rm -rf /home/node/.openclaw 2>/dev/null
+  ln -sf /data/.openclaw /home/node/.openclaw 2>&1 || printf "[entrypoint-v9] WARN: cannot symlink\n"
+  printf "[entrypoint-v9] Linked /data/.openclaw -> /home/node/.openclaw\n"
+  df -h /data 2>/dev/null || true
 else
-  echo "[entrypoint] WARNING: /data not mounted"
-  mkdir -p /home/node/.openclaw
+  printf "[entrypoint-v9] WARNING: /data not mounted, using /home/node/.openclaw\n"
+  mkdir -p /home/node/.openclaw 2>&1 || true
 fi
 
 # ── PATH setup ──────────────────────────────────────────────────
@@ -31,7 +34,6 @@ fi
 
 # ── Clean up lock files ─────────────────────────────────────────
 STATE_DIR="${OPENCLAW_STATE_DIR:-/home/node/.openclaw}"
-find "$STATE_DIR" -name "gateway.*.lock" -delete 2>/dev/null || true
 find "$STATE_DIR" -name "*.lock" -delete 2>/dev/null || true
 
 # ── Disk cleanup ────────────────────────────────────────────────
@@ -40,14 +42,11 @@ find "$STATE_DIR" -type f \( -name "*.log" -o -name "*.log.*" \) -mtime +1 -dele
 find "$STATE_DIR" -type f -path "*/transcripts/*" -mtime +3 -delete 2>/dev/null || true
 rm -rf "$STATE_DIR/completions" 2>/dev/null || true
 
-echo "[entrypoint] Disk: $(df -h /data 2>/dev/null | tail -1 || echo 'N/A')"
+printf "[entrypoint-v9] Disk cleanup done\n"
 
 # ── ALWAYS regenerate seed config ───────────────────────────────
-# This prevents corrupted config from crashing OpenClaw
 CONFIG_FILE="${STATE_DIR}/openclaw.json"
-GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
-
-echo "[entrypoint] Regenerating seed config..."
+printf "[entrypoint-v9] Removing old config: %s\n" "$CONFIG_FILE"
 rm -f "$CONFIG_FILE" 2>/dev/null || true
 
 cat > "$CONFIG_FILE" << 'CONFIGEOF'
@@ -62,7 +61,10 @@ cat > "$CONFIG_FILE" << 'CONFIGEOF'
 }
 CONFIGEOF
 
-# Inject gateway token via node (handles JSON properly)
+printf "[entrypoint-v9] Config written to %s\n" "$CONFIG_FILE"
+
+# Inject gateway token
+GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
 if [ -n "$GATEWAY_TOKEN" ]; then
   node -e "
     const fs = require('fs');
@@ -72,15 +74,12 @@ if [ -n "$GATEWAY_TOKEN" ]; then
       const d = JSON.parse(fs.readFileSync(p, 'utf8'));
       d.gateway.auth = { token: t, mode: 'token' };
       fs.writeFileSync(p, JSON.stringify(d, null, 2));
-      console.log('[entrypoint] Gateway token set: ' + t.substring(0, 12) + '...');
+      console.log('[entrypoint-v9] Gateway token set');
     } catch(e) {
-      console.error('[entrypoint] Token inject error: ' + e.message);
+      console.error('[entrypoint-v9] Token inject error: ' + e.message);
     }
   " "$CONFIG_FILE" 2>&1
 fi
-
-echo "[entrypoint] Config written:"
-cat "$CONFIG_FILE" 2>/dev/null | sed 's/"token": "[^"]*"/"token": "***"/g' || echo "[entrypoint] Cannot read config"
 
 # ── Claude setup-token ──────────────────────────────────────────
 CLAUDE_TOKEN="${CLAUDE_SETUP_TOKEN:-}"
@@ -106,8 +105,8 @@ if [ -n "$CLAUDE_TOKEN" ]; then
       token: token
     };
     fs.writeFileSync(authPath, JSON.stringify(store, null, 2));
-    console.log('[entrypoint] Claude token -> ' + authPath);
-  " "$AUTH_FILE" 2>&1 || echo "[entrypoint] WARNING: Claude token write failed"
+    console.log('[entrypoint-v9] Claude token written to ' + authPath);
+  " "$AUTH_FILE" 2>&1 || printf "[entrypoint-v9] WARN: Claude token write failed\n"
 fi
 
 # ── Xvfb ────────────────────────────────────────────────────────
@@ -117,7 +116,7 @@ if command -v Xvfb >/dev/null 2>&1; then
 fi
 
 # ── Start OpenClaw ──────────────────────────────────────────────
-echo "[entrypoint] ========================================"
-echo "[entrypoint] Starting: $@"
-echo "[entrypoint] ========================================"
-exec "$@" 2>&1
+printf "[entrypoint-v9] ========================================\n"
+printf "[entrypoint-v9] Starting: %s\n" "$*"
+printf "[entrypoint-v9] ========================================\n"
+exec "$@"
