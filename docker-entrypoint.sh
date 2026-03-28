@@ -308,6 +308,19 @@ if command -v Xvfb >/dev/null 2>&1; then
   echo "[entrypoint] Xvfb virtual display started on :99"
 fi
 
+# ── Clean up stale lock/pid files that prevent gateway startup ────
+echo "[entrypoint] Cleaning up stale lock/pid files..."
+find "$STATE_DIR" -type f \( -name "*.lock" -o -name "*.pid" -o -name "gateway.sock" \) -print -delete 2>/dev/null || true
+find /tmp -maxdepth 2 -type f \( -name "*.lock" -o -name "*.pid" \) -user node -print -delete 2>/dev/null || true
+
+# ── Verify gateway binary works before exec ──────────────────────
+echo "[entrypoint] Testing gateway binary..."
+node /app/openclaw.mjs --version 2>&1 || echo "[entrypoint] WARNING: openclaw --version returned non-zero"
+echo "[entrypoint] Gateway binary test complete"
+
 # Execute the main command
-echo "[entrypoint] Starting OpenClaw gateway..."
-exec "$@"
+echo "[entrypoint] Starting OpenClaw gateway with args: $@"
+echo "[entrypoint] Working directory: $(pwd)"
+echo "[entrypoint] Node version: $(node --version)"
+echo "[entrypoint] Memory: $(cat /proc/meminfo | grep MemTotal)"
+exec "$@" 2>&1
