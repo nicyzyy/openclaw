@@ -28,14 +28,19 @@ if [ -d /home/node/.cache/ms-playwright ]; then
   echo "[entrypoint] Playwright browsers found at: $PLAYWRIGHT_BROWSERS_PATH"
 fi
 
-# ── Config initialization ─────────────────────────────────────────
+# ── Clean up stale lock/pid files that prevent gateway startup ────
+echo "[entrypoint] Cleaning up stale lock/pid files..."
 STATE_DIR="${OPENCLAW_STATE_DIR:-/home/node/.openclaw}"
+find "$STATE_DIR" -type f \( -name "*.lock" -o -name "*.pid" -o -name "gateway.sock" \) -print -delete 2>/dev/null || true
+find /tmp -maxdepth 2 -type f \( -name "*.lock" -o -name "*.pid" \) -user node -print -delete 2>/dev/null || true
+
+# ── Config initialization ─────────────────────────────────────────
 CONFIG_FILE="${STATE_DIR}/openclaw.json"
-RESET_MARKER="${STATE_DIR}/.config-reset-v3"
+RESET_MARKER="${STATE_DIR}/.config-reset-v4"
 echo "[entrypoint] Config path: $CONFIG_FILE"
 
-# One-time config reset: backup old config and let OpenClaw generate fresh defaults
-# The marker file ensures this only runs once per persistent volume
+# Force config reset v4: delete old config to let OpenClaw generate fresh defaults
+# This ensures we start clean after all the failed deployments
 if [ -f "$CONFIG_FILE" ] && [ ! -f "$RESET_MARKER" ]; then
   BACKUP_NAME="openclaw.json.backup-$(date +%Y%m%d-%H%M%S)"
   cp "$CONFIG_FILE" "${STATE_DIR}/${BACKUP_NAME}"
@@ -43,13 +48,11 @@ if [ -f "$CONFIG_FILE" ] && [ ! -f "$RESET_MARKER" ]; then
   rm -f "$CONFIG_FILE"
   echo "[entrypoint] Removed old config — OpenClaw will generate fresh defaults on startup"
   touch "$RESET_MARKER"
-  echo "[entrypoint] Config reset complete (marker: .config-reset-v3)"
+  echo "[entrypoint] Config reset v4 complete"
 fi
 
-# If config file exists (either pre-existing or will be created by OpenClaw),
-# apply Render-specific settings after OpenClaw creates it.
-# We use a post-start config patch approach: write a minimal seed config
-# that OpenClaw will merge with its defaults on first start.
+# If config file exists, apply Render-specific settings.
+# If not, create a minimal seed config.
 if [ ! -f "$CONFIG_FILE" ]; then
   echo "[entrypoint] Creating seed config for Render environment..."
   mkdir -p "$STATE_DIR"
@@ -153,8 +156,6 @@ else
       }
 
       // Ensure sandbox mode off
-      if (!d.agents) d.agents = {};
-      if (!d.agents.defaults) d.agents.defaults = {};
       if (!d.agents.defaults.sandbox) d.agents.defaults.sandbox = {};
       if (d.agents.defaults.sandbox.mode !== 'off') {
         d.agents.defaults.sandbox.mode = 'off';
@@ -166,21 +167,6 @@ else
         changed = true;
       }
 
-      // Force override: replace any openai-codex model references with anthropic/claude-opus-4-6
-      // This handles agent-level model overrides in agents.list[]
-      if (Array.isArray(d.agents.list)) {
-        d.agents.list.forEach(function(agent) {
-          if (agent.model) {
-            var modelStr = typeof agent.model === 'string' ? agent.model : (agent.model.primary || '');
-            if (modelStr.includes('openai-codex')) {
-              agent.model = { primary: 'anthropic/claude-opus-4-6' };
-              changed = true;
-              console.log('[entrypoint] Replaced openai-codex model for agent: ' + (agent.id || 'unknown'));
-            }
-          }
-        });
-      }
-
       if (changed) {
         fs.writeFileSync(p, JSON.stringify(d, null, 2));
         console.log('[entrypoint] Config patched successfully');
@@ -189,6 +175,9 @@ else
       }
     } catch(e) {
       console.error('[entrypoint] Config patch error:', e.message);
+      // If config is corrupted, delete it and let OpenClaw regenerate
+      console.log('[entrypoint] Removing corrupted config file...');
+      try { fs.unlinkSync(p); } catch(e2) {}
     }
   " "$CONFIG_FILE"
 fi
@@ -308,19 +297,18 @@ if command -v Xvfb >/dev/null 2>&1; then
   echo "[entrypoint] Xvfb virtual display started on :99"
 fi
 
-# ── Clean up stale lock/pid files that prevent gateway startup ────
-echo "[entrypoint] Cleaning up stale lock/pid files..."
-find "$STATE_DIR" -type f \( -name "*.lock" -o -name "*.pid" -o -name "gateway.sock" \) -print -delete 2>/dev/null || true
-find /tmp -maxdepth 2 -type f \( -name "*.lock" -o -name "*.pid" \) -user node -print -delete 2>/dev/null || true
-
-# ── Verify gateway binary works before exec ──────────────────────
-echo "[entrypoint] Testing gateway binary..."
-node /app/openclaw.mjs --version 2>&1 || echo "[entrypoint] WARNING: openclaw --version returned non-zero"
-echo "[entrypoint] Gateway binary test complete"
+# ── Pre-flight diagnostics ────────────────────────────────────────
+echo "[entrypoint] Pre-flight checks:"
+echo "[entrypoint]   Working directory: $(pwd)"
+echo "[entrypoint]   Node version: $(node --version)"
+echo "[entrypoint]   Memory: $(cat /proc/meminfo | grep MemTotal)"
+echo "[entrypoint]   PORT env: ${PORT:-not set}"
+echo "[entrypoint]   Config exists: $(test -f "$CONFIG_FILE" && echo yes || echo no)"
+if [ -f "$CONFIG_FILE" ]; then
+  echo "[entrypoint]   Config size: $(wc -c < "$CONFIG_FILE") bytes"
+fi
+echo "[entrypoint]   Command: $@"
 
 # Execute the main command
-echo "[entrypoint] Starting OpenClaw gateway with args: $@"
-echo "[entrypoint] Working directory: $(pwd)"
-echo "[entrypoint] Node version: $(node --version)"
-echo "[entrypoint] Memory: $(cat /proc/meminfo | grep MemTotal)"
+echo "[entrypoint] Starting OpenClaw gateway..."
 exec "$@" 2>&1

@@ -237,6 +237,9 @@ RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
 
 ENV NODE_ENV=production
 
+# Expose the default gateway port for Render port detection
+EXPOSE 18789
+
 # ── Custom: Render persistent storage entrypoint ────────────────
 COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
