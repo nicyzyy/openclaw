@@ -79,7 +79,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
       agents: {
         defaults: {
           model: {
-            primary: 'openai-codex/gpt-5.5'
+            primary: 'codex/gpt-5.5'
           },
           sandbox: {
             mode: 'off',
@@ -93,6 +93,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
         },
         order: {
           'openai-codex': ['openai-codex:tucn520@gmail.com'],
+          'codex': ['openai-codex:tucn520@gmail.com'],
           'openai': ['openai-codex:tucn520@gmail.com']
         }
       }
@@ -146,8 +147,8 @@ else
       if (!d.agents) d.agents = {};
       if (!d.agents.defaults) d.agents.defaults = {};
       if (!d.agents.defaults.model) d.agents.defaults.model = {};
-      if (d.agents.defaults.model.primary !== 'openai-codex/gpt-5.5') {
-        d.agents.defaults.model.primary = 'openai-codex/gpt-5.5';
+      if (d.agents.defaults.model.primary !== 'codex/gpt-5.5') {
+        d.agents.defaults.model.primary = 'codex/gpt-5.5';
         changed = true;
       }
       // Exec YOLO mode: security=full, ask=off, host=gateway
@@ -175,6 +176,10 @@ else
       if (!d.auth.order) d.auth.order = {};
       if (!d.auth.order['openai-codex'] || !d.auth.order['openai-codex'].includes('openai-codex:tucn520@gmail.com')) {
         d.auth.order['openai-codex'] = ['openai-codex:tucn520@gmail.com'];
+        changed = true;
+      }
+      if (!d.auth.order['codex'] || !d.auth.order['codex'].includes('openai-codex:tucn520@gmail.com')) {
+        d.auth.order['codex'] = ['openai-codex:tucn520@gmail.com'];
         changed = true;
       }
       if (!d.auth.order['openai'] || !d.auth.order['openai'].includes('openai-codex:tucn520@gmail.com')) {
