@@ -186,6 +186,13 @@ else
         d.auth.order['openai'] = ['openai-codex:tucn520@gmail.com'];
         changed = true;
       }
+      // Ensure codex/gpt-5.5 uses the Codex harness (agentRuntime) to bypass Cloudflare
+      if (!d.agents.defaults.models) d.agents.defaults.models = {};
+      if (!d.agents.defaults.models['codex/gpt-5.5']) d.agents.defaults.models['codex/gpt-5.5'] = {};
+      if (!d.agents.defaults.models['codex/gpt-5.5'].agentRuntime || d.agents.defaults.models['codex/gpt-5.5'].agentRuntime.id !== 'codex') {
+        d.agents.defaults.models['codex/gpt-5.5'].agentRuntime = { id: 'codex' };
+        changed = true;
+      }
       if (changed) {
         fs.writeFileSync(p, JSON.stringify(d, null, 2));
         console.log('[entrypoint] Config patched');
